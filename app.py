@@ -1,344 +1,351 @@
-# Noor - app.py - مع داتابيز حقيقية PostgreSQL - الحسابات ما بتطير
-from flask import Flask, request, jsonify, session
-from flask_cors import CORS
-import os, uuid, hashlib, base64
+import os, json, base64, random, string
 from datetime import datetime
-
-try:
-    from sqlalchemy import create_engine, Column, String, Integer, Float, Text, DateTime, Boolean
-    from sqlalchemy.orm import sessionmaker, declarative_base
-    HAS_SQL = True
-except:
-    HAS_SQL = False
+from flask import Flask, request, jsonify
+from flask_cors import CORS
+from flask_sqlalchemy import SQLAlchemy
+from werkzeug.security import generate_password_hash, check_password_hash
 
 app = Flask(__name__)
-app.secret_key = os.environ.get("SECRET_KEY", "noor-secret-2026")
-CORS(app, supports_credentials=True)
+CORS(app)
+app.config['SQLALCHEMY_DATABASE_URI'] = os.environ.get('DATABASE_URL','sqlite:///app.db')
+if app.config['SQLALCHEMY_DATABASE_URI'].startswith('postgres://'):
+    app.config['SQLALCHEMY_DATABASE_URI'] = app.config['SQLALCHEMY_DATABASE_URI'].replace('postgres://','postgresql://',1)
+app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
+app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY','b-2048-secret')
+db = SQLAlchemy(app)
 
-# --- الداتابيز ---
-DATABASE_URL = os.environ.get("DATABASE_URL", "")
-if DATABASE_URL.startswith("postgres://"):
-    DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
-if not DATABASE_URL:
-    DATABASE_URL = "sqlite:///noor.db"
-
-Base = declarative_base()
-engine = create_engine(DATABASE_URL, pool_pre_ping=True)
-Session = sessionmaker(bind=engine)
-
-class User(Base):
-    __tablename__ = "users"
-    id = Column(String, primary_key=True)
-    name = Column(String)
-    phone_enc = Column(String)
-    email_enc = Column(String)
-    email_plain = Column(String, unique=True)
-    password_hash = Column(String)
-    city = Column(String, default="")
-    bio = Column(Text, default="")
-    avatar = Column(String, default="")
-    followers = Column(Integer, default=0)
-    views = Column(Integer, default=0)
-    created_at = Column(DateTime, default=datetime.utcnow)
-
-class Post(Base):
-    __tablename__ = "posts"
-    id = Column(String, primary_key=True)
-    user_id = Column(String)
-    author_name = Column(String)
-    author_avatar = Column(String)
-    content = Column(Text)
-    media_url = Column(Text, default="")
-    media_type = Column(String, default="text")
-    kind = Column(String, default="post")
-    likes = Column(Integer, default=0)
-    comments_count = Column(Integer, default=0)
-    shares = Column(Integer, default=0)
-    liked = Column(Boolean, default=False)
-    created_at = Column(DateTime, default=datetime.utcnow)
-
-class Comment(Base):
-    __tablename__ = "comments"
-    id = Column(String, primary_key=True)
-    post_id = Column(String)
-    author = Column(String)
-    content = Column(Text)
-    created_at = Column(DateTime, default=datetime.utcnow)
-
-class Page(Base):
-    __tablename__ = "pages"
-    id = Column(String, primary_key=True)
-    user_id = Column(String)
-    name = Column(String)
-    type = Column(String)
-    category = Column(String)
-    followers = Column(Integer, default=0)
-
-class Ad(Base):
-    __tablename__ = "ads"
-    id = Column(String, primary_key=True)
-    user_id = Column(String)
-    title = Column(String)
-    budget = Column(Float, default=0)
-    target = Column(String)
-    views = Column(Integer, default=0)
-    clicks = Column(Integer, default=0)
-    spent = Column(Float, default=0)
-
-class Gift(Base):
-    __tablename__ = "gifts"
-    id = Column(String, primary_key=True)
-    user_id = Column(String)
-    name = Column(String)
-    value = Column(Float, default=0)
-
-class Support(Base):
-    __tablename__ = "support"
-    id = Column(String, primary_key=True)
-    user_id = Column(String)
-    type = Column(String)
-    text = Column(Text)
-
-class Link(Base):
-    __tablename__ = "links"
-    id = Column(String, primary_key=True)
-    user_id = Column(String)
-    url = Column(Text)
-    time = Column(String)
-
-class Payment(Base):
-    __tablename__ = "payments"
-    id = Column(String, primary_key=True)
-    user_id = Column(String)
-    type = Column(String)
-    amount = Column(Float, default=0)
-    time = Column(String)
-
-class Chat(Base):
-    __tablename__ = "chats"
-    id = Column(String, primary_key=True)
-    name = Column(String)
-    avatar = Column(String)
-    last_message = Column(String, default="")
-
-class Message(Base):
-    __tablename__ = "messages"
-    id = Column(String, primary_key=True)
-    chat_id = Column(String)
-    sender_id = Column(String)
-    content = Column(Text)
-
-Base.metadata.create_all(engine)
-
-def hash_pw(pw): return hashlib.sha256(pw.encode()).hexdigest()
-def encrypt(t): return base64.b64encode(t.encode()).decode() if t else ""
+# ===== Helpers - مصلحة =====
+def hash_pw(p): return generate_password_hash(p)
+def check_pw(h,p): return check_password_hash(h,p)
+def encrypt(t):
+    try: return base64.b64encode(str(t).encode()).decode()
+    except: return str(t)
 def decrypt(t):
-    try: return base64.b64decode(t.encode()).decode()
-    except: return ""
-def get_user():
-    uid = session.get("user_id")
-    if not uid: return None
-    s = Session(); u = s.query(User).filter_by(id=uid).first(); s.close(); return u
-def db(): return Session()
+    try: return base64.b64decode(str(t).encode()).decode()
+    except: return str(t)
+def now(): return datetime.utcnow().isoformat()
 
-HTML = """<!DOCTYPE html><html lang="ar" dir="rtl"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>نور - Noor</title><style>*{box-sizing:border-box;margin:0;padding:0;font-family:system-ui}body{background:#f0f2f5;padding-bottom:85px}header{background:#fff;padding:8px 12px;position:sticky;top:0;z-index:99}.top{display:flex;align-items:center;gap:8px;position:relative}.logo{width:42px;height:42px;border-radius:50%;background:linear-gradient(135deg,#2563eb,#06b6d4,#a855f7);color:#fff;display:flex;align-items:center;justify-content:center;font-size:22px;font-weight:900}.hbtn{width:38px;height:38px;border-radius:50%;background:#f0f2f5;border:none;font-size:18px;cursor:pointer;position:relative}.badge{position:absolute;top:-4px;left:-4px;background:#e11d48;color:#fff;font-size:10px;padding:2px 5px;border-radius:10px;font-weight:900}.card{background:#fff;border-radius:16px;padding:14px;margin:8px}.flex{display:flex;gap:10px;align-items:center}.avatar{width:42px;height:42px;border-radius:50%;object-fit:cover}input,select,textarea{width:100%;background:#f0f2f5;border:none;padding:12px;border-radius:20px;outline:none;margin-top:8px}.btn{background:#2563eb;color:#fff;border:none;padding:11px 16px;border-radius:20px;font-weight:800;cursor:pointer;width:100%;margin-top:10px}.post{line-height:1.6;font-size:15px;margin:10px 0}.post img,.post video{width:100%;border-radius:14px;margin-top:8px;max-height:420px;object-fit:cover}.actions{display:flex;gap:6px;border-top:1px solid #eee;padding-top:10px;margin-top:10px}.actions button{flex:1;padding:9px;border:none;border-radius:20px;background:#f0f2f5;font-weight:700}.actions button.active{background:#dbeafe;color:#2563eb}.hidden{display:none}nav{position:fixed;bottom:0;right:0;left:0;max-width:600px;margin:auto;background:#fff;display:flex;border-top:1px solid #eee;z-index:99}nav button{flex:1;padding:11px 2px;border:none;background:none;font-weight:900;font-size:12px;color:#888}nav button.active{color:#2563eb;border-top:3px solid #2563eb}.stories{display:flex;gap:8px;overflow-x:auto;padding:0 8px}.story{min-width:105px;height:155px;border-radius:16px;position:relative;overflow:hidden;background:#ddd}.story img{width:100%;height:100%;object-fit:cover}.story span{position:absolute;bottom:8px;right:8px;color:#fff;font-weight:800;font-size:12px}.menu-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px;padding:0 8px}.menu-grid div{background:#fff;border-radius:16px;padding:16px;text-align:center;font-weight:800;font-size:14px;cursor:pointer}.menu-item{display:flex;justify-content:space-between;align-items:center;padding:12px;background:#fff;border-radius:14px;margin:6px 8px;font-weight:700;cursor:pointer}.toggle{width:48px;height:28px;border-radius:20px;background:#ccc;position:relative;cursor:pointer;flex-shrink:0}.toggle.on{background:#2563eb}.toggle::after{content:"";position:absolute;width:22px;height:22px;background:#fff;border-radius:50%;top:3px;right:3px}.toggle.on::after{right:23px}.tabs{display:flex;gap:6px;margin:10px 0}.tabs button{flex:1;padding:10px;border:none;border-radius:20px;background:#eee;font-weight:800}.tabs button.active{background:#2563eb;color:#fff}.cbtns{display:flex;gap:6px;margin-top:10px;flex-wrap:wrap}.cbtns label,.cbtns button{flex:1;min-width:80px;text-align:center;padding:10px;border-radius:20px;background:#f0f2f5;font-weight:700;font-size:13px;cursor:pointer;border:none}.comment-box{display:flex;gap:6px;margin-top:10px}.comment{padding:8px 10px;background:#f0f2f5;border-radius:14px;margin-top:6px;font-size:13px}.reel{height:520px;border-radius:18px;overflow:hidden;position:relative;background:#000;margin:8px}.reel img,.reel video{width:100%;height:100%;object-fit:cover}.reel-info{position:absolute;bottom:12px;right:12px;left:60px;color:#fff}.reel-actions{position:absolute;left:10px;bottom:20px;display:flex;flex-direction:column;gap:12px}.reel-actions button{width:48px;height:48px;border-radius:50%;border:none;background:#ffffffcc;font-size:20px}.grid3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:2px}.grid3 img{width:100%;aspect-ratio:1;object-fit:cover}.chat-item{display:flex;gap:10px;align-items:center;padding:12px;background:#fff;border-radius:16px;margin:8px}.msg{max-width:80%;padding:10px 14px;border-radius:18px;margin:6px 0;font-size:14px}.msg.me{background:#2563eb;color:#fff;margin-right:auto}.msg.other{background:#fff}.algo{font-size:11px;color:#2563eb;background:#eff6ff;padding:6px 8px;border-radius:10px;margin-top:6px}.plus-menu{position:absolute;top:46px;left:0;width:270px;background:#fff;border-radius:16px;box-shadow:0 10px 30px #0003;padding:8px;display:none;z-index:999}.plus-menu.open{display:block}.plus-menu .pitem{display:flex;justify-content:space-between;align-items:center;padding:12px;border-radius:12px;cursor:pointer;font-weight:700}.auth{max-width:420px;margin:20px auto;padding:20px}.auth-logo{width:80px;height:80px;border-radius:50%;background:linear-gradient(135deg,#2563eb,#06b6d4,#a855f7);color:#fff;display:flex;align-items:center;justify-content:center;font-size:40px;font-weight:900;margin:0 auto}.section-title{font-size:13px;color:#888;font-weight:800;margin:14px 8px 6px}
-</style></head><body>
-<div id="authScreen"><div class="auth"><div class="auth-logo">ن</div><h2 style="text-align:center;margin-top:10px">نور - Noor</h2><p style="text-align:center;color:#888;font-size:13px">منصة سودانية - مشفرة 🔒 - داتابيز حقيقية - حسابك ما بيطير</p><div style="background:#dcfce7;padding:10px;border-radius:12px;text-align:center;font-size:12px;margin-bottom:10px">✅ داتابيز PostgreSQL - محفوظ للأبد</div><div class="card" id="loginCard"><b>تسجيل الدخول</b><input id="loginEmail" placeholder="البريد الإلكتروني أو رقم الجوال"><input id="loginPw" type="password" placeholder="الرقم السري - مشفر SHA256 🔒"><button class="btn" onclick="doLogin()">دخول 🔓</button><button class="btn" style="background:#16a34a" onclick="showRegister()">إنشاء حساب جديد - مجاناً</button></div><div class="card hidden" id="registerCard"><b>إنشاء حساب جديد - حقيقي - محفوظ في الداتابيز</b><input id="regName" placeholder="الاسم الكامل"><input id="regPhone" placeholder="رقم الجوال"><input id="regEmail" placeholder="البريد الإلكتروني"><input id="regPw" type="password" placeholder="الرقم السري - 6 حروف"><input id="regCity" placeholder="المدينة - عطبرة"><button class="btn" style="background:#16a34a" onclick="doRegister()">إنشاء الحساب ✅ - محفوظ للأبد</button><button class="btn" style="background:#eee;color:#000" onclick="showLogin()">عندي حساب - دخول</button></div></div></div>
-<div id="appScreen" class="hidden">
-<header><div class="top"><div class="logo">ن</div><div style="flex:1"><b style="font-size:22px">نور <span style="color:#2563eb">Noor</span></b><div style="font-size:11px;color:#888" id="helloUser">أهلاً بيك</div></div><button class="hbtn" onclick="show('menu')">☰</button><button class="hbtn" onclick="event.stopPropagation();togglePlus()">+</button><button class="hbtn">🔍</button><button class="hbtn" onclick="show('chat')">💬<span class="badge">+9</span></button><button class="hbtn" onclick="show('notifs')">🔔<span class="badge">3</span></button><div id="plusMenu" class="plus-menu" onclick="event.stopPropagation()"><b style="padding:4px 8px">إنشاء</b><div class="pitem" onclick="show('book');closePlus()">📝 منشور <span>›</span></div><div class="pitem" onclick="show('book');closePlus()">➕ قصة <span>›</span></div><div class="pitem" onclick="show('reels');closePlus()">🎬 مقطع ريلز <span>›</span></div><div class="pitem" onclick="checkLive();closePlus()">📹 بث مباشر <span>›</span></div><div class="pitem" onclick="show('pages');closePlus()">📄 إنشاء صفحة <span>›</span></div><div class="pitem" onclick="show('ads');closePlus()">📢 إنشاء إعلان <span>›</span></div></div></div></header>
-<div id="tab-book"><div class="card"><div class="flex"><img class="avatar" src="https://i.pravatar.cc/150?u=me"><input id="newPost" type="text" placeholder="بم تفكر؟"></div><div class="tabs"><button id="t-file" class="active" onclick="pubTab('file')">📁 ملفات</button><button id="t-link" onclick="pubTab('link')">🔗 رابط</button><button id="t-make" onclick="pubTab('make')">🎨 صنع صورة</button><button id="t-video" onclick="pubTab('video')">🎬 ريلز</button></div><div id="p-file"><div class="cbtns"><label>📷 صورة<input type="file" accept="image/*" hidden onchange="pickFile(this,'image')"></label><label>🎥 فيديو<input type="file" accept="video/*" hidden onchange="pickFile(this,'video')"></label><label>🎬 ريلز<input type="file" accept="video/*,image/*" hidden onchange="pickFile(this,'reel')"></label></div></div><div id="p-link" class="hidden"><input id="mediaUrl" type="text" placeholder="الصق رابط..."><button class="btn" style="background:#16a34a" onclick="previewLink()">👀 معاينة</button></div><div id="p-make" class="hidden"><input id="makeText" type="text" placeholder="اكتب نص الصورة..."><button class="btn" style="background:#a855f7" onclick="makeImage()">🎨 صنع الصورة</button></div><div id="p-video" class="hidden"><input id="videoText" type="text" placeholder="اكتب نص الريلز..."><button class="btn" style="background:#e11d48" onclick="makeVideo()">🎬 صنع ريلز</button></div><div id="preview" style="margin-top:10px"></div><div id="makeCanvasWrap" class="hidden"><canvas id="makeCanvas" width="600" height="400" style="width:100%;border-radius:12px"></canvas></div><div style="display:flex;gap:6px;margin-top:10px"><button class="btn" style="flex:1" onclick="createPost()">نشر بوست 🚀</button><button class="btn" style="flex:1;background:#e11d48" onclick="createPostAsReel()">نشر ريلز 🎬</button></div></div><div class="stories" id="stories"></div><div id="suggest" style="display:flex;gap:8px;overflow-x:auto;padding:0 8px"></div><div id="posts"></div><div class="card" id="empty" style="text-align:center;color:#888">لسه ما في منشورات - انت أول واحد انشر 👆</div></div>
-<div id="tab-reels" class="hidden"><div class="card"><b>🎬 ريلز</b></div><div id="reels"></div></div>
-<div id="tab-gram" class="hidden"><div class="card"><b>📸 نور قرام</b></div><div id="gramGrid" class="grid3"></div></div>
-<div id="tab-chat" class="hidden"><div class="card"><b>💬 نور شات</b></div><div id="chatList"></div><div class="card"><input id="newChatName" placeholder="اسم المحادثة..."><button class="btn" style="background:#16a34a" onclick="createChat()">+ محادثة</button></div><div id="chatBox" class="card hidden"><h3 id="chatTitle"></h3><div id="msgs" style="height:280px;overflow-y:auto;background:#f0f2f5;padding:10px;border-radius:12px"></div><div class="flex" style="margin-top:10px"><input id="newMsg" placeholder="اكتب رسالة..."><button class="btn" onclick="sendMsg()">إرسال</button></div></div></div>
-<div id="tab-notifs" class="hidden"><div class="card"><b>🔔 الإشعارات</b></div><div id="notifList"></div></div>
-<div id="tab-threads" class="hidden"><div class="card"><b>🧵 نور ثريدز</b></div><div class="card"><input id="threadText" placeholder="اكتب ثريد..."><button class="btn" onclick="createThread()">نشر ثريد</button></div><div id="threads"></div></div>
-<div id="tab-profile" class="hidden"><div class="card"><img src="https://picsum.photos/800/300" style="width:100%;height:140px;object-fit:cover;border-radius:14px"><div class="flex" style="margin-top:-20px"><img id="profileAvatar" src="https://i.pravatar.cc/150?u=me" style="width:80px;height:80px;border-radius:50%;border:4px solid #fff"><div><b id="profileName">...</b><div style="font-size:12px;color:#888" id="profileCity">...</div><div style="font-size:12px" id="profileBio">...</div></div></div><p style="font-size:11px;color:#16a34a">🔒 بياناتك مشفرة - محفوظة في الداتابيز</p><button class="btn" onclick="document.getElementById('editForm').classList.toggle('hidden')">✏️ تعديل البيانات</button></div><div id="editForm" class="card hidden"><b>✏️ تعديل البيانات - مشفرة</b><input id="editName" placeholder="الاسم"><input id="editCity" placeholder="المدينة"><input id="editBio" placeholder="النبذة"><input id="editPhone" placeholder="رقم الجوال - مشفر"><input id="editAvatar" placeholder="رابط صورتك"><button class="btn" style="background:#16a34a" onclick="saveProfile()">💾 حفظ</button></div></div>
-<div id="tab-pages" class="hidden"><div class="card"><b>📄 إنشاء صفحة</b></div><div class="card"><input id="pageName" placeholder="اسم الصفحة"><select id="pageType"><option value="normal">📄 صفحة عادية</option><option value="digital">🎬 صفحة محتوى رقمي</option></select><select id="pageCat"><option>كوميدي</option><option>رياضة</option><option>أخبار</option><option>طبخ</option></select><button class="btn" style="background:#16a34a" onclick="createPage()">+ إنشاء الصفحة</button></div><div id="pagesList"></div></div>
-<div id="tab-money" class="hidden"><div class="card" style="background:linear-gradient(135deg,#16a34a,#06b6d4);color:#fff"><b>💰 أرباحي - محفوظة في الداتابيز</b><p style="font-size:12px">1000 مشاهدة = 2$</p></div><div class="card"><div style="display:flex;gap:8px"><div style="flex:1;background:#f0f2f5;border-radius:14px;padding:12px;text-align:center"><b id="mFollowers" style="font-size:20px">0</b><div style="font-size:12px">متابعين</div></div><div style="flex:1;background:#f0f2f5;border-radius:14px;padding:12px;text-align:center"><b id="mViews" style="font-size:20px">0</b><div style="font-size:12px">مشاهدات</div></div><div style="flex:1;background:#f0f2f5;border-radius:14px;padding:12px;text-align:center"><b id="mTotal" style="font-size:20px;color:#16a34a">0$</b><div style="font-size:12px">إجمالي</div></div></div><div style="font-size:12px;margin-top:10px" id="mBreak"></div><button class="btn" style="background:#e11d48" onclick="withdraw()">💸 سحب - بنكك / MTN / Zain</button></div><div class="card"><b>🎁 الهدايا</b><div style="display:flex;gap:6px;margin-top:8px"><button style="flex:1;padding:10px;border:none;border-radius:20px;background:#fff3cd;font-weight:800" onclick="sendGift('وردة 🌹',0.1)">🌹 وردة 0.10$</button><button style="flex:1;padding:10px;border:none;border-radius:20px;background:#fff3cd;font-weight:800" onclick="sendGift('أسد 🦁',10)">🦁 أسد 10$</button></div></div><div class="card"><b>📹 اللايف</b><div id="liveInfo"></div><button class="btn" style="background:#e11d48" onclick="checkLive()">📹 هل مسموح لي أعمل لايف؟</button></div></div>
-<div id="tab-ads" class="hidden"><div class="card" style="background:linear-gradient(135deg,#7c3aed,#2563eb);color:#fff"><b>📢 منصة إعلانات نور</b></div><div class="card"><input id="adTitle" placeholder="عنوان الإعلان"><input id="adBudget" placeholder="الميزانية"><select id="adTarget"><option>كل السودان</option><option>عطبرة</option><option>الخرطوم</option></select><button class="btn" style="background:#7c3aed" onclick="createAd()">🚀 نشر الإعلان</button></div><div id="adsList"></div></div>
-<div id="tab-menu" class="hidden"><div class="card"><div class="flex" onclick="show('profile')"><img class="avatar" src="https://i.pravatar.cc/150?u=me"><div><b id="menuName">...</b><div style="font-size:12px;color:#888">عرض ملفك</div></div></div><button class="btn" onclick="show('pages')">+ إنشاء صفحة</button><button class="btn" style="background:#16a34a" onclick="show('money')">💰 أرباحي</button><button class="btn" style="background:#7c3aed" onclick="show('ads')">📢 منصة الإعلانات</button></div><div class="menu-grid"><div>🕐<br>الذكريات</div><div>🔖<br>المحفوظة</div><div>👥<br>الأصدقاء</div><div>👨‍👩‍👧<br>المجموعات</div><div onclick="show('reels')">🎬<br>ريلز</div><div>📰<br>الأخبار</div><div>📅<br>المناسبات</div><div>🎮<br>الألعاب</div></div><div style="text-align:center;color:#2563eb;font-weight:800;padding:10px;cursor:pointer" onclick="document.getElementById('moreMenu').classList.toggle('hidden')">عرض المزيد ▼</div><div id="moreMenu" class="hidden"><div class="menu-grid"><div onclick="show('support')">🆘<br>المساعدة</div><div onclick="show('time')">⏰<br>إدارة الوقت</div><div onclick="show('devices')">📱<br>الأجهزة</div><div onclick="show('links')">🔗<br>سجل الروابط</div><div onclick="show('payments')">💳<br>الدفع</div><div onclick="show('zain')">📶<br>Zain</div></div></div><div class="section-title">الإعدادات و الخصوصية</div><div class="menu-item" onclick="show('settings')"><span>⚙️ الإعدادات</span><span>›</span></div><div class="menu-item" onclick="show('privacy')"><span>🔒 مركز الخصوصية</span><span>›</span></div><div class="menu-item" onclick="show('time')"><span>⏰ إدارة الوقت</span><span>›</span></div><div class="menu-item" onclick="show('devices')"><span>📱 طلبات الأجهزة</span><span>›</span></div><div class="menu-item" onclick="show('ads')"><span>📢 أحدث نشاط إعلاني</span><span>›</span></div><div class="menu-item" onclick="show('payments')"><span>💳 الطلبات و الدفع</span><span>›</span></div><div class="menu-item" onclick="show('links')"><span>🔗 سجل الروابط</span><span>›</span></div><div class="menu-item" onclick="show('zain')"><span>📶 مركز Zain Sudan</span><span>›</span></div><div class="section-title">أيضاً من نور</div><div class="menu-item" onclick="show('edits')"><span>✏️ نور Edits</span><span>›</span></div><div class="menu-item" onclick="show('threads')"><span>🧵 نور Threads</span><span>›</span></div><div class="menu-item" onclick="show('gram')"><span>📸 نور Instagram</span><span>›</span></div><div class="menu-item" onclick="show('freebasics')"><span>🌐 نور Free Basics</span><span>›</span></div><div class="menu-item" onclick="show('chat')"><span>💬 نور Messenger</span><span>›</span></div><div class="menu-item" onclick="show('whatsapp')"><span>💚 نور واتساب</span><span>›</span></div><div class="menu-item" onclick="show('presence')"><span>📡 الحضور العام</span><span>›</span></div><div class="menu-item" onclick="show('upgrades')"><span>⭐ الترقيات</span><span>›</span></div><div class="menu-item" onclick="show('support')"><span>🆘 المساعدة و الدعم</span><span>›</span></div><div class="menu-item" onclick="logout()"><span>🚪 تسجيل الخروج</span><span>›</span></div></div>
-<div id="tab-support" class="hidden"><div class="card"><b>🆘 المساعدة و الدعم</b></div><div class="card"><select id="supportType"><option>مشكلة في النشر</option><option>مشكلة في الدخول</option><option>مشكلة في الأرباح</option><option>أخرى</option></select><textarea id="supportText" placeholder="اكتب مشكلتك..."></textarea><button class="btn" style="background:#e11d48" onclick="sendSupport()">🚨 إرسال البلاغ</button></div><div id="supportList"></div></div>
-<div id="tab-time" class="hidden"><div class="card"><b>⏰ إدارة الوقت</b><p>كم ساعة قعدت اليوم؟</p><div style="font-size:24px;font-weight:900" id="timeToday">45 دقيقة اليوم</div><button class="btn" style="background:#f59e0b" onclick="alert('تم تفعيل التنبيه بعد 1 ساعة ⏰')">⏰ نبهني بعد 1 ساعة</button></div></div>
-<div id="tab-devices" class="hidden"><div class="card"><b>📱 طلبات الأجهزة</b></div><div class="card"><b>Android - هذا الجهاز</b><div>عطبرة - متصل الآن ✅</div></div></div>
-<div id="tab-links" class="hidden"><div class="card"><b>🔗 سجل الروابط</b></div><div id="linksList"></div></div>
-<div id="tab-payments" class="hidden"><div class="card"><b>💳 الطلبات و الدفع</b></div><div id="paymentsList"></div></div>
-<div id="tab-zain" class="hidden"><div class="card"><b>📶 مركز Zain Sudan</b></div><div class="card"><div class="menu-item"><span>📦 باقة 1GB - نور مجاناً</span><span>›</span></div><button class="btn" style="background:#7c3aed" onclick="alert('تم تفعيل باقة Zain ✅')">تفعيل</button></div></div>
-<div id="tab-edits" class="hidden"><div class="card"><b>✏️ نور Edits</b><button class="btn" style="background:#a855f7" onclick="alert('تم تعديل الفيديو ✅')">✏️ تعديل الفيديو</button></div></div>
-<div id="tab-freebasics" class="hidden"><div class="card"><b>🌐 نور Free Basics</b><button class="btn" style="background:#16a34a" onclick="alert('تم تفعيل Free Basics ✅')">تفعيل المجاني</button></div></div>
-<div id="tab-whatsapp" class="hidden"><div class="card"><b>💚 نور واتساب</b><button class="btn" style="background:#16a34a" onclick="show('chat')">فتح نور واتساب</button></div></div>
-<div id="tab-presence" class="hidden"><div class="card"><b>📡 الحضور العام</b><div class="flex" style="justify-content:space-between;margin-top:10px"><span><b>ظاهر للكل</b></span><div class="toggle on"></div></div></div></div>
-<div id="tab-upgrades" class="hidden"><div class="card"><b>⭐ الترقيات - نور برو</b><button class="btn" style="background:#f59e0b" onclick="alert('تم الترقية ✅')">ترقية الآن ⭐</button></div></div>
-<div id="tab-privacy" class="hidden"><div class="card"><b>🔒 مركز الخصوصية - مشفر</b><div class="flex" style="justify-content:space-between;margin-top:10px"><span><b>إخفاء رقم الجوال</b></span><div class="toggle on"></div></div><div class="flex" style="justify-content:space-between;margin-top:10px"><span><b>إخفاء الإيميل</b></span><div class="toggle on"></div></div></div></div>
-<div id="tab-settings" class="hidden"><div class="card"><b>🛠️ فاحص الأكواد + الداتابيز</b><button class="btn" style="background:#7c3aed" onclick="runDiagnostics()">🔍 فحص كل شي</button><div id="diagResult"></div></div></div>
-<nav><button id="btn-book" class="active" onclick="show('book')">📘<br>نور بوك</button><button id="btn-gram" onclick="show('gram')">📸<br>نور قرام</button><button id="btn-reels" onclick="show('reels')">🎬<br>ريلز</button><button id="btn-chat" onclick="show('chat')">💬<br>نور شات</button><button id="btn-threads" onclick="show('threads')">🧵<br>ثريدز</button><button id="btn-menu" onclick="show('menu')">☰<br>القائمة</button></nav>
-</div>
-<script>const API=window.location.origin;let posts=[],chats=[],activeChat=null,mediaData='',mediaType='image',postKind='post',profile={},pages=[],money={},ads=[],suggest=[];
-function showRegister(){document.getElementById('loginCard').classList.add('hidden');document.getElementById('registerCard').classList.remove('hidden');}
-function showLogin(){document.getElementById('registerCard').classList.add('hidden');document.getElementById('loginCard').classList.remove('hidden');}
-async function doRegister(){const name=document.getElementById('regName').value,phone=document.getElementById('regPhone').value,email=document.getElementById('regEmail').value,pw=document.getElementById('regPw').value,city=document.getElementById('regCity').value;if(!name||!phone||!email||!pw)return alert('املا كل البيانات');if(pw.length<6)return alert('الرقم السري لازم 6 حروف');const r=await fetch(API+'/api/v1/auth/register',{method:'POST',headers:{'Content-Type':'application/json'},credentials:'include',body:JSON.stringify({name,phone,email,password:pw,city})});const d=await r.json();if(d.error)return alert(d.error);alert('تم إنشاء حسابك ✅ - محفوظ في الداتابيز - ما بيطير');showLogin();}
-async function doLogin(){const email=document.getElementById('loginEmail').value,pw=document.getElementById('loginPw').value;if(!email||!pw)return alert('اكتب الإيميل و الرقم السري');const r=await fetch(API+'/api/v1/auth/login',{method:'POST',headers:{'Content-Type':'application/json'},credentials:'include',body:JSON.stringify({email,password:pw})});const d=await r.json();if(d.error)return alert(d.error);document.getElementById('authScreen').classList.add('hidden');document.getElementById('appScreen').classList.remove('hidden');loadAll();}
-async function logout(){await fetch(API+'/api/v1/auth/logout',{method:'POST',credentials:'include'});location.reload();}
-function togglePlus(){document.getElementById('plusMenu').classList.toggle('open');}
-function closePlus(){document.getElementById('plusMenu').classList.remove('open');}
-document.addEventListener('click',function(e){if(!e.target.closest('#plusMenu')){closePlus();}});
-function pubTab(t){['file','link','make','video'].forEach(x=>{document.getElementById('p-'+x).classList.toggle('hidden',x!==t);document.getElementById('t-'+x).classList.toggle('active',x===t);});postKind=t==='video'?'reel':'post';}
-function pickFile(inp,type){const f=inp.files[0];if(!f)return;const r=new FileReader();r.onload=e=>{mediaData=e.target.result;mediaType=type==='reel'?'video':type;if(type==='reel')postKind='reel';document.getElementById('preview').innerHTML=mediaType==='video'?`<video src="${mediaData}" controls style="width:100%;border-radius:12px"></video>`:`<img src="${mediaData}" style="width:100%;border-radius:12px">`;};r.readAsDataURL(f);}
-function previewLink(){const u=document.getElementById('mediaUrl').value;if(!u)return alert('الصق رابط أول');mediaData=u;mediaType=u.includes('.mp4')?'video':'image';document.getElementById('preview').innerHTML=mediaType==='video'?`<video src="${u}" controls style="width:100%;border-radius:12px"></video>`:`<img src="${u}" style="width:100%;border-radius:12px">`;addLink(u);}
-async function addLink(u){await fetch(API+'/api/v1/links',{method:'POST',headers:{'Content-Type':'application/json'},credentials:'include',body:JSON.stringify({url:u})});}
-function makeImage(){const txt=document.getElementById('makeText').value||document.getElementById('newPost').value||'نور';const c=document.getElementById('makeCanvas');document.getElementById('makeCanvasWrap').classList.remove('hidden');const ctx=c.getContext('2d');const g=ctx.createLinearGradient(0,0,600,400);g.addColorStop(0,'#2563eb');g.addColorStop(1,'#a855f7');ctx.fillStyle=g;ctx.fillRect(0,0,600,400);ctx.fillStyle='#fff';ctx.font='bold 32px system-ui';ctx.textAlign='center';const w=txt.match(/.{1,20}/g)||[txt];w.forEach((x,i)=>ctx.fillText(x,300,180+i*40));ctx.font='bold 18px system-ui';ctx.fillText('نور - Noor',300,360);mediaData=c.toDataURL('image/png');mediaType='image';document.getElementById('preview').innerHTML=`<img src="${mediaData}" style="width:100%;border-radius:12px">`;}
-function makeVideo(){const txt=document.getElementById('videoText').value||document.getElementById('newPost').value||'ريلز نور';mediaData='https://picsum.photos/600/800?random='+Date.now();mediaType='video';postKind='reel';document.getElementById('preview').innerHTML=`<div style="background:linear-gradient(135deg,#e11d48,#7c3aed);color:#fff;padding:40px;border-radius:14px;text-align:center;font-size:22px;font-weight:900">${txt}</div>`;}
-async function loadAll(){const r=await fetch(API+'/api/v1/posts',{credentials:'include'});posts=await r.json();const rp=await fetch(API+'/api/v1/profile',{credentials:'include'});profile=await rp.json();const rpg=await fetch(API+'/api/v1/pages',{credentials:'include'});pages=await rpg.json();const rm=await fetch(API+'/api/v1/monetization',{credentials:'include'});money=await rm.json();const ra=await fetch(API+'/api/v1/ads',{credentials:'include'});ads=await ra.json();const r5=await fetch(API+'/api/v1/chats',{credentials:'include'});chats=await r5.json();const r3=await fetch(API+'/api/v1/suggest',{credentials:'include'});suggest=await r3.json();renderAll();}
-function renderAll(){document.getElementById('helloUser').innerText='أهلاً بيك يا '+profile.name;document.getElementById('profileName').innerText=profile.name;document.getElementById('profileCity').innerText=profile.city;document.getElementById('profileBio').innerText=profile.bio||'';document.getElementById('menuName').innerText=profile.name;document.getElementById('stories').innerHTML=`<div class="story" style="background:linear-gradient(#2563eb,#06b6d4);display:flex;align-items:center;justify-content:center;color:#fff;font-weight:900">+ قصتي</div>`+(posts.length?posts.slice(0,5).map(p=>`<div class="story"><img src="${p.media_url||'https://picsum.photos/300/400?random='+p.id}"><span>${p.author_name}</span></div>`).join(''):'');document.getElementById('suggest').innerHTML=suggest.map(s=>`<div class="card" style="min-width:170px;text-align:center"><img src="${s.avatar}" style="width:70px;height:70px;border-radius:50%"><br><b>${s.name}</b><div style="font-size:11px;color:#888">${s.mutual} مشترك</div><div class="algo">${s.reason}</div><button class="btn" style="width:100%;margin-top:6px" onclick="addFriend('${s.name}',this)">+ إضافة صديق</button></div>`).join('');document.getElementById('empty').style.display=posts.filter(p=>p.kind!=='reel'&&p.kind!=='thread').length?'none':'block';document.getElementById('posts').innerHTML=posts.filter(p=>p.kind!=='reel'&&p.kind!=='thread').map(p=>`<div class="card"><div class="flex"><img class="avatar" src="${p.author_avatar}"><div style="flex:1"><b>${p.author_name}</b></div></div><p class="post">${p.content}${p.media_url?(p.media_type==='video'?`<video src="${p.media_url}" controls></video>`:`<img src="${p.media_url}">`):''}</p><div style="display:flex;gap:6px"><button style="flex:1;padding:10px;border:none;border-radius:20px;background:#fff3cd;font-weight:800" onclick="sendGift('وردة 🌹',0.1)">🌹 وردة 0.10$</button><button style="flex:1;padding:10px;border:none;border-radius:20px;background:#fff3cd;font-weight:800" onclick="sendGift('أسد 🦁',10)">🦁 أسد 10$</button></div><div class="actions"><button class="${p.liked?'active':''}" onclick="likePost('${p.id}')">${p.liked?'❤️ أعجبني':'🤍 أعجبني'}</button><button onclick="toggleComments('${p.id}')">💬 تعليق</button><button onclick="sharePost('${p.id}')">↗️ شير</button></div><div id="c-${p.id}" class="hidden"><div id="clist-${p.id}"></div><div class="comment-box"><input id="cin-${p.id}" type="text" placeholder="اكتب تعليق..."><button class="btn" onclick="addComment('${p.id}')">إرسال</button></div></div></div>`).join('');document.getElementById('reels').innerHTML=posts.filter(p=>p.kind==='reel').map(p=>`<div class="reel">${p.media_url?`<img src="${p.media_url}">`:`<div style="display:flex;align-items:center;justify-content:center;height:100%;color:#fff;font-size:22px;padding:20px;text-align:center">${p.content}</div>`}<div class="reel-info"><b>${p.author_name}</b><p>${p.content}</p></div><div class="reel-actions"><button onclick="likePost('${p.id}')">❤️</button><button>💬</button><button onclick="sharePost('${p.id}')">↗️</button></div></div>`).join('');document.getElementById('gramGrid').innerHTML=posts.filter(p=>p.media_url).map(p=>`<img src="${p.media_url}">`).join('');document.getElementById('threads').innerHTML=posts.filter(p=>p.kind==='thread').map(p=>`<div class="card">${p.content}</div>`).join('');document.getElementById('chatList').innerHTML=chats.map(c=>`<div class="chat-item" onclick="openChat('${c.id}','${c.name}')"><img class="avatar" src="${c.avatar}"><div style="flex:1"><b>${c.name}</b><div style="font-size:13px;color:#888">${c.last_message||'ابدأ'}</div></div></div>`).join('');document.getElementById('notifList').innerHTML=`<div class="card">🔔 أهلاً بيك في نور 🎉</div><div class="card">🔔 حسابك محفوظ في الداتابيز - ما بيطير ✅</div>`;document.getElementById('pagesList').innerHTML=pages.map(pg=>`<div class="card"><b>${pg.name}</b> - ${pg.type==='digital'?'🎬 محتوى رقمي':'📄 عادية'}</div>`).join('');document.getElementById('mFollowers').innerText=money.followers;document.getElementById('mViews').innerText=money.views;document.getElementById('mTotal').innerText=money.total+'$';document.getElementById('mBreak').innerHTML=`مشاهدات: ${money.views} - أرباح: ${money.earnings}$ - هدايا: ${money.gifts}$ - إجمالي: ${money.total}$`;document.getElementById('liveInfo').innerHTML=`متابعين: ${money.followers} - ${money.live.level} - ${money.live.reason}`;document.getElementById('adsList').innerHTML=ads.map(a=>`<div class="card"><b>${a.title}</b> - ${a.budget}$ - ${a.target}</div>`).join('')||'لسه ما عملت إعلان';}
-async function createPost(){const v=document.getElementById('newPost').value;const url=document.getElementById('mediaUrl')?.value||'';const fm=url||mediaData;if(!v.trim()&&!fm)return alert('اكتب شي أو اختار صورة');await fetch(API+'/api/v1/posts',{method:'POST',headers:{'Content-Type':'application/json'},credentials:'include',body:JSON.stringify({author_name:profile.name||'أنت',content:v||'منشور جديد',media_url:fm,media_type:fm?(mediaType==='video'?'video':'image'):'text',kind:postKind})});document.getElementById('newPost').value='';mediaData='';document.getElementById('preview').innerHTML='';loadAll();alert('تم النشر ✅ - محفوظ في الداتابيز');}
-async function createPostAsReel(){postKind='reel';await createPost();show('reels');}
-async function createThread(){const v=document.getElementById('threadText').value;if(!v.trim())return;await fetch(API+'/api/v1/posts',{method:'POST',headers:{'Content-Type':'application/json'},credentials:'include',body:JSON.stringify({content:v,kind:'thread'})});document.getElementById('threadText').value='';loadAll();}
-async function likePost(id){const r=await fetch(API+`/api/v1/posts/${id}/like`,{method:'POST',credentials:'include'});const p=await r.json();posts=posts.map(x=>x.id===id?p:x);renderAll();}
-async function sharePost(id){await fetch(API+`/api/v1/posts/${id}/share`,{method:'POST',credentials:'include'});loadAll();}
-async function toggleComments(id){const el=document.getElementById('c-'+id);el.classList.toggle('hidden');const r=await fetch(API+`/api/v1/posts/${id}/comments`,{credentials:'include'});const cs=await r.json();document.getElementById('clist-'+id).innerHTML=cs.map(c=>`<div class="comment"><b>${c.author}</b> ${c.content}</div>`).join('')||'لا تعليقات';}
-async function addComment(id){const v=document.getElementById('cin-'+id).value;if(!v.trim())return;await fetch(API+`/api/v1/posts/${id}/comment`,{method:'POST',headers:{'Content-Type':'application/json'},credentials:'include',body:JSON.stringify({author:profile.name,content:v})});document.getElementById('cin-'+id).value='';loadAll();}
-async function addFriend(n,btn){btn.innerText='تم ✅';}
-async function saveProfile(){const data={name:document.getElementById('editName').value||profile.name,city:document.getElementById('editCity').value||profile.city,bio:document.getElementById('editBio').value||profile.bio,phone:document.getElementById('editPhone').value||profile.phone,avatar:document.getElementById('editAvatar').value||profile.avatar};await fetch(API+'/api/v1/profile',{method:'POST',headers:{'Content-Type':'application/json'},credentials:'include',body:JSON.stringify(data)});loadAll();alert('تم الحفظ ✅ - في الداتابيز');}
-async function createPage(){const n=document.getElementById('pageName').value;if(!n.trim())return alert('اكتب اسم الصفحة');await fetch(API+'/api/v1/pages',{method:'POST',headers:{'Content-Type':'application/json'},credentials:'include',body:JSON.stringify({name:n,type:document.getElementById('pageType').value,category:document.getElementById('pageCat').value})});loadAll();alert('تم إنشاء الصفحة ✅ - محفوظة');}
-async function sendGift(name,val){await fetch(API+'/api/v1/gifts',{method:'POST',headers:{'Content-Type':'application/json'},credentials:'include',body:JSON.stringify({name,value:val})});loadAll();alert('تم إرسال '+name+' ✅');}
-async function withdraw(){await fetch(API+'/api/v1/payments',{method:'POST',headers:{'Content-Type':'application/json'},credentials:'include',body:JSON.stringify({type:'سحب أرباح',amount:money.total})});alert('سحب الأرباح - بنكك / MTN / Zain');loadAll();}
-async function checkLive(){const r=await fetch(API+'/api/v1/monetization',{credentials:'include'});const m=await r.json();alert(m.live.allowed?'✅ مسموح - '+m.live.reason:'❌ ممنوع - '+m.live.reason);}
-async function createAd(){const t=document.getElementById('adTitle').value,b=document.getElementById('adBudget').value;if(!t||!b)return alert('اكتب عنوان و ميزانية');await fetch(API+'/api/v1/ads',{method:'POST',headers:{'Content-Type':'application/json'},credentials:'include',body:JSON.stringify({title:t,budget:parseFloat(b),target:document.getElementById('adTarget').value})});loadAll();alert('تم نشر الإعلان ✅');}
-async function sendSupport(){const t=document.getElementById('supportText').value;if(!t.trim())return alert('اكتب مشكلتك');await fetch(API+'/api/v1/support',{method:'POST',headers:{'Content-Type':'application/json'},credentials:'include',body:JSON.stringify({type:document.getElementById('supportType').value,text:t})});document.getElementById('supportText').value='';loadAll();alert('تم إرسال بلاغك ✅');}
-async function createChat(){const n=document.getElementById('newChatName').value||'محادثة';await fetch(API+'/api/v1/chats',{method:'POST',headers:{'Content-Type':'application/json'},credentials:'include',body:JSON.stringify({name:n,avatar:'https://i.pravatar.cc/150?u='+n})});loadAll();}
-async function openChat(id,name){activeChat=id;document.getElementById('chatTitle').innerText=name;document.getElementById('chatBox').classList.remove('hidden');const r=await fetch(API+`/api/v1/chats/${id}/messages`,{credentials:'include'});const msgs=await r.json();document.getElementById('msgs').innerHTML=msgs.map(m=>`<div class="msg ${m.sender_id==='me'?'me':'other'}">${m.content}</div>`).join('');}
-async function sendMsg(){const v=document.getElementById('newMsg').value;if(!v.trim()||!activeChat)return;await fetch(API+`/api/v1/chats/${activeChat}/messages`,{method:'POST',headers:{'Content-Type':'application/json'},credentials:'include',body:JSON.stringify({sender_id:'me',content:v})});document.getElementById('newMsg').value='';openChat(activeChat,document.getElementById('chatTitle').innerText);loadAll();}
-async function runDiagnostics(){const r=await fetch(API+'/api/v1/diagnostics',{credentials:'include'});const d=await r.json();document.getElementById('diagResult').innerHTML=`<b>${d.summary}</b><br>`+d.tests.map(t=>`<div style="padding:8px;background:#f0f2f5;border-radius:10px;margin-top:6px"><b>${t.name}</b> - ${t.status}<br><span style="font-size:12px">${t.detail}</span></div>`).join('');}
-function show(t){['book','gram','reels','chat','threads','menu','settings','profile','pages','money','ads','notifs','support','time','devices','links','payments','zain','edits','freebasics','whatsapp','presence','upgrades','privacy'].forEach(x=>{const e=document.getElementById('tab-'+x);if(e)e.classList.toggle('hidden',x!==t);});if(t==='links')loadLinks();if(t==='payments')loadPayments();if(t==='support')loadSupport();}
-async function loadLinks(){const r=await fetch(API+'/api/v1/links',{credentials:'include'});const d=await r.json();document.getElementById('linksList').innerHTML=d.map(x=>`<div class="card">🔗 ${x.url}</div>`).join('')||'لسه ما ضغطت رابط';}
-async function loadPayments(){const r=await fetch(API+'/api/v1/payments',{credentials:'include'});const d=await r.json();document.getElementById('paymentsList').innerHTML=d.map(x=>`<div class="card">💳 ${x.type} - ${x.amount}$</div>`).join('')||'لسه ما في دفع';}
-async function loadSupport(){const r=await fetch(API+'/api/v1/support',{credentials:'include'});const d=await r.json();document.getElementById('supportList').innerHTML=d.map(x=>`<div class="card"><b>${x.type}</b><p>${x.text}</p></div>`).join('')||'';}
-</script></body></html>"""
-@app.route('/')
-def home(): return HTML
-@app.route('/api/v1/auth/register', methods=['POST'])
+# ===== Models =====
+class User(db.Model):
+    id=db.Column(db.Integer,primary_key=True); email=db.Column(db.String(200),unique=True)
+    password=db.Column(db.String(300)); name=db.Column(db.String(200),default='User')
+    avatar=db.Column(db.Text,default=''); bio=db.Column(db.Text,default='')
+    cover=db.Column(db.Text,default=''); username=db.Column(db.String(100),default='')
+    phone=db.Column(db.String(50),default=''); verified=db.Column(db.Boolean,default=False)
+    followers=db.Column(db.Integer,default=0); following=db.Column(db.Integer,default=0)
+    balance=db.Column(db.Float,default=0); created=db.Column(db.String(50),default=now)
+    def to_dict(self): return {"id":self.id,"email":self.email,"name":self.name,"avatar":self.avatar,"bio":self.bio,"cover":self.cover,"username":self.username,"phone":self.phone,"verified":self.verified,"followers":self.followers,"following":self.following,"balance":self.balance}
+class Post(db.Model):
+    id=db.Column(db.Integer,primary_key=True); user_id=db.Column(db.Integer); user_name=db.Column(db.String(200))
+    text=db.Column(db.Text,default=''); image=db.Column(db.Text,default=''); video=db.Column(db.Text,default='')
+    link=db.Column(db.Text,default=''); likes=db.Column(db.Integer,default=0)
+    comments=db.Column(db.Integer,default=0); shares=db.Column(db.Integer,default=0); created=db.Column(db.String(50),default=now)
+    def to_dict(self): return {"id":self.id,"user_id":self.user_id,"user_name":self.user_name,"text":self.text,"image":self.image,"video":self.video,"link":self.link,"likes":self.likes,"comments":self.comments,"shares":self.shares,"created":self.created}
+class Comment(db.Model):
+    id=db.Column(db.Integer,primary_key=True); post_id=db.Column(db.Integer); user_id=db.Column(db.Integer)
+    user_name=db.Column(db.String(200)); text=db.Column(db.Text); created=db.Column(db.String(50),default=now)
+    def to_dict(self): return {"id":self.id,"post_id":self.post_id,"user_id":self.user_id,"user_name":self.user_name,"text":self.text,"created":self.created}
+class Friend(db.Model):
+    id=db.Column(db.Integer,primary_key=True); user_id=db.Column(db.Integer); friend_id=db.Column(db.Integer)
+    friend_name=db.Column(db.String(200)); status=db.Column(db.String(50),default='accepted')
+    def to_dict(self): return {"id":self.id,"user_id":self.user_id,"friend_id":self.friend_id,"friend_name":self.friend_name,"status":self.status}
+class Chat(db.Model):
+    id=db.Column(db.Integer,primary_key=True); user1=db.Column(db.Integer); user2=db.Column(db.Integer)
+    name=db.Column(db.String(200)); last_msg=db.Column(db.Text,default='')
+    def to_dict(self): return {"id":self.id,"user1":self.user1,"user2":self.user2,"name":self.name,"last_msg":self.last_msg}
+class Message(db.Model):
+    id=db.Column(db.Integer,primary_key=True); chat_id=db.Column(db.Integer); sender_id=db.Column(db.Integer)
+    sender_name=db.Column(db.String(200)); text=db.Column(db.Text); image=db.Column(db.Text,default='')
+    created=db.Column(db.String(50),default=now)
+    def to_dict(self): return {"id":self.id,"chat_id":self.chat_id,"sender_id":self.sender_id,"sender_name":self.sender_name,"text":self.text,"image":self.image,"created":self.created}
+class Page(db.Model):
+    id=db.Column(db.Integer,primary_key=True); user_id=db.Column(db.Integer); name=db.Column(db.String(200))
+    category=db.Column(db.String(100),default='Page'); likes=db.Column(db.Integer,default=0)
+    def to_dict(self): return {"id":self.id,"user_id":self.user_id,"name":self.name,"category":self.category,"likes":self.likes}
+class Reel(db.Model):
+    id=db.Column(db.Integer,primary_key=True); user_id=db.Column(db.Integer); user_name=db.Column(db.String(200))
+    video=db.Column(db.Text,default=''); caption=db.Column(db.Text,default=''); likes=db.Column(db.Integer,default=0)
+    def to_dict(self): return {"id":self.id,"user_id":self.user_id,"user_name":self.user_name,"video":self.video,"caption":self.caption,"likes":self.likes}
+class Thread(db.Model):
+    id=db.Column(db.Integer,primary_key=True); user_id=db.Column(db.Integer); user_name=db.Column(db.String(200))
+    text=db.Column(db.Text); likes=db.Column(db.Integer,default=0)
+    def to_dict(self): return {"id":self.id,"user_id":self.user_id,"user_name":self.user_name,"text":self.text,"likes":self.likes}
+class Gift(db.Model):
+    id=db.Column(db.Integer,primary_key=True); sender_id=db.Column(db.Integer); receiver_id=db.Column(db.Integer)
+    amount=db.Column(db.Float,default=0); message=db.Column(db.Text,default='')
+    def to_dict(self): return {"id":self.id,"sender_id":self.sender_id,"receiver_id":self.receiver_id,"amount":self.amount,"message":self.message}
+class Ad(db.Model):
+    id=db.Column(db.Integer,primary_key=True); user_id=db.Column(db.Integer); title=db.Column(db.String(300))
+    budget=db.Column(db.Float,default=0); status=db.Column(db.String(50),default='active')
+    def to_dict(self): return {"id":self.id,"user_id":self.user_id,"title":self.title,"budget":self.budget,"status":self.status}
+class Support(db.Model):
+    id=db.Column(db.Integer,primary_key=True); user_id=db.Column(db.Integer); subject=db.Column(db.String(300))
+    message=db.Column(db.Text); status=db.Column(db.String(50),default='open')
+    def to_dict(self): return {"id":self.id,"user_id":self.user_id,"subject":self.subject,"message":self.message,"status":self.status}
+class Link(db.Model):
+    id=db.Column(db.Integer,primary_key=True); user_id=db.Column(db.Integer); url=db.Column(db.Text); title=db.Column(db.String(300),default='')
+    def to_dict(self): return {"id":self.id,"user_id":self.user_id,"url":self.url,"title":self.title}
+class Payment(db.Model):
+    id=db.Column(db.Integer,primary_key=True); user_id=db.Column(db.Integer); amount=db.Column(db.Float,default=0)
+    method=db.Column(db.String(100),default=''); status=db.Column(db.String(50),default='completed'); created=db.Column(db.String(50),default=now)
+    def to_dict(self): return {"id":self.id,"user_id":self.user_id,"amount":self.amount,"method":self.method,"status":self.status,"created":self.created}
+class Story(db.Model):
+    id=db.Column(db.Integer,primary_key=True); user_id=db.Column(db.Integer); user_name=db.Column(db.String(200)); image=db.Column(db.Text,default='')
+    def to_dict(self): return {"id":self.id,"user_id":self.user_id,"user_name":self.user_name,"image":self.image}
+
+with app.app_context(): db.create_all()
+
+def get_user():
+    h = request.headers.get('X-User-Id') or request.args.get('user_id') or (request.get_json(silent=True) or {}).get('user_id')
+    if not h: return None
+    try: return User.query.get(int(h))
+    except: return None
+def req_user():
+    u=get_user()
+    if not u: return None,(jsonify({"error":"login required"}),401)
+    return u,None
+
+# ===== Auth =====
+@app.route('/api/v1/register',methods=['POST'])
 def register():
-    d=request.json or {}; email=d.get("email","").lower()
-    if not email or not d.get("password") or not d.get("name") or not d.get("phone"): return jsonify({"error":"املا كل البيانات"}),400
-    s=db()
-    if s.query(User).filter_by(email_plain=email).first(): s.close(); return jsonify({"error":"الإيميل مسجل قبل كده"}),400
-    uid=str(uuid.uuid4()); u=User(id=uid,name=d.get("name"),phone_enc=encrypt(d.get("phone")),email_enc=encrypt(email),email_plain=email,password_hash=hash_pw(d.get("password")),city=d.get("city",""),avatar="https://i.pravatar.cc/150?u="+uid,followers=0,views=0)
-    s.add(u); s.commit(); s.close(); return jsonify({"ok":True})
-@app.route('/api/v1/auth/login', methods=['POST'])
+    d=request.get_json(force=True); email=d.get('email','').strip().lower(); pw=d.get('password','')
+    if not email or not pw: return jsonify({"error":"email and password required"}),400
+    if User.query.filter_by(email=email).first(): return jsonify({"error":"email exists"}),400
+    u=User(email=email,password=hash_pw(pw),name=d.get('name') or email.split('@')[0],username=d.get('name') or email.split('@')[0])
+    db.session.add(u); db.session.commit(); return jsonify({"user":u.to_dict()})
+@app.route('/api/v1/login',methods=['POST'])
 def login():
-    d=request.json or {}; email=d.get("email","").lower(); pw=d.get("password","")
-    s=db(); users=s.query(User).all(); s.close()
-    for u in users:
-        if u.email_plain==email or decrypt(u.phone_enc)==email:
-            if u.password_hash==hash_pw(pw): session["user_id"]=u.id; return jsonify({"ok":True,"name":u.name})
-            return jsonify({"error":"الرقم السري غلط"}),401
-    return jsonify({"error":"الحساب ما موجود - اعمل حساب جديد"}),404
-@app.route('/api/v1/auth/logout', methods=['POST'])
-def logout(): session.pop("user_id",None); return jsonify({"ok":True})
-@app.route('/api/v1/profile', methods=['GET'])
-def get_profile():
-    u=get_user()
-    if not u: return jsonify({"name":"...","city":"...","bio":"","avatar":"https://i.pravatar.cc/150?u=me"})
-    return jsonify({"name":u.name,"city":u.city or "","bio":u.bio or "","avatar":u.avatar,"phone":"مشفر 🔒"})
-@app.route('/api/v1/profile', methods=['POST'])
-def update_profile():
-    u=get_user()
-    if not u: return jsonify({"error":"سجل دخول"}),401
-    d=request.json or {}; s=db(); uu=s.query(User).filter_by(id=u.id).first()
-    if d.get("name"): uu.name=d["name"]
-    if d.get("city"): uu.city=d["city"]
-    if d.get("bio"): uu.bio=d["bio"]
-    if d.get("phone"): uu.phone_enc=encrypt(d["phone"])
-    if d.get("avatar"): uu.avatar=d["avatar"]
-    s.commit(); s.close(); return jsonify({"ok":True})
-@app.route('/api/v1/pages', methods=['GET'])
-def get_pages():
-    s=db(); r=[{"id":p.id,"name":p.name,"type":p.type,"category":p.category,"followers":p.followers} for p in s.query(Page).filter_by(user_id=session.get("user_id")).all()]; s.close(); return jsonify(r)
-@app.route('/api/v1/pages', methods=['POST'])
-def create_page():
-    if not get_user(): return jsonify({"error":"سجل دخول"}),401
-    d=request.json or {}; s=db(); p=Page(id=str(uuid.uuid4()),user_id=session.get("user_id"),name=d.get("name"),type=d.get("type","normal"),category=d.get("category",""),followers=0); s.add(p); s.commit(); s.close(); return jsonify({"ok":True})
-@app.route('/api/v1/monetization', methods=['GET'])
-def get_money():
-    u=get_user(); uid=session.get("user_id",""); s=db(); gifts=sum(g.value for g in s.query(Gift).filter_by(user_id=uid).all()); s.close()
-    views=u.views if u else 0; followers=u.followers if u else 0; earnings=round(views/1000*2,2); total=round(earnings+gifts,2)
-    if followers<100: live={"allowed":False,"reason":f"عندك {followers} متابع - لازم 100 متابع","level":"ممنوع"}
-    elif followers<1000: live={"allowed":True,"reason":f"عندك {followers} متابع - لايف عادي","level":"عادي"}
-    else: live={"allowed":True,"reason":f"عندك {followers} متابع - لايف + هدايا + ارباح","level":"محترف"}
-    return jsonify({"followers":followers,"views":views,"earnings":earnings,"gifts":gifts,"total":total,"live":live})
-@app.route('/api/v1/gifts', methods=['POST'])
-def gift():
-    d=request.json or {}; s=db(); s.add(Gift(id=str(uuid.uuid4()),user_id=session.get("user_id"),name=d.get("name"),value=d.get("value",0))); s.commit(); s.close(); return jsonify({"ok":True})
-@app.route('/api/v1/ads', methods=['GET'])
-def get_ads():
-    s=db(); r=[{"id":a.id,"title":a.title,"budget":a.budget,"target":a.target,"views":a.views,"clicks":a.clicks,"spent":a.spent} for a in s.query(Ad).filter_by(user_id=session.get("user_id")).all()]; s.close(); return jsonify(r)
-@app.route('/api/v1/ads', methods=['POST'])
-def create_ad():
-    if not get_user(): return jsonify({"error":"سجل دخول"}),401
-    d=request.json or {}; s=db(); s.add(Ad(id=str(uuid.uuid4()),user_id=session.get("user_id"),title=d.get("title"),budget=d.get("budget",0),target=d.get("target"),views=0,clicks=0,spent=d.get("budget",0))); s.add(Payment(id=str(uuid.uuid4()),user_id=session.get("user_id"),type="إعلان - "+d.get("title",""),amount=d.get("budget",0),time=datetime.now().strftime("%Y-%m-%d %H:%M"))); s.commit(); s.close(); return jsonify({"ok":True})
-@app.route('/api/v1/support', methods=['GET'])
-def get_support():
-    s=db(); r=[{"type":x.type,"text":x.text} for x in s.query(Support).filter_by(user_id=session.get("user_id")).all()]; s.close(); return jsonify(r)
-@app.route('/api/v1/support', methods=['POST'])
-def post_support():
-    d=request.json or {}; s=db(); s.add(Support(id=str(uuid.uuid4()),user_id=session.get("user_id"),type=d.get("type"),text=d.get("text"))); s.commit(); s.close(); return jsonify({"ok":True})
-@app.route('/api/v1/links', methods=['GET'])
-def get_links():
-    s=db(); r=[{"url":x.url,"time":x.time} for x in s.query(Link).filter_by(user_id=session.get("user_id")).all()]; s.close(); return jsonify(r)
-@app.route('/api/v1/links', methods=['POST'])
-def post_link():
-    d=request.json or {}; s=db(); s.add(Link(id=str(uuid.uuid4()),user_id=session.get("user_id"),url=d.get("url"),time=datetime.now().strftime("%Y-%m-%d %H:%M"))); s.commit(); s.close(); return jsonify({"ok":True})
-@app.route('/api/v1/payments', methods=['GET'])
-def get_payments():
-    s=db(); r=[{"type":x.type,"amount":x.amount,"time":x.time} for x in s.query(Payment).filter_by(user_id=session.get("user_id")).all()]; s.close(); return jsonify(r)
-@app.route('/api/v1/payments', methods=['POST'])
-def post_payment():
-    d=request.json or {}; s=db(); s.add(Payment(id=str(uuid.uuid4()),user_id=session.get("user_id"),type=d.get("type"),amount=d.get("amount",0),time=datetime.now().strftime("%Y-%m-%d %H:%M"))); s.commit(); s.close(); return jsonify({"ok":True})
-@app.route('/api/v1/suggest', methods=['GET'])
-def get_suggest(): return jsonify([{"id":str(uuid.uuid4()),"name":n,"city":c,"mutual":m,"reason":f"{m} اصدقاء مشتركين","avatar":f"https://i.pravatar.cc/150?u={n}"} for n,c,m in [("أحمد علي","عطبرة",5),("سارة محمد","الخرطوم",12),("محمد خالد","مدني",8)]])
-@app.route('/api/v1/diagnostics', methods=['GET'])
+    d=request.get_json(force=True); u=User.query.filter_by(email=d.get('email','').strip().lower()).first()
+    if not u or not check_pw(u.password,d.get('password','')): return jsonify({"error":"invalid login"}),401
+    return jsonify({"user":u.to_dict()})
+@app.route('/api/v1/logout',methods=['POST'])
+def logout(): return jsonify({"ok":True})
+
+# ===== Profile / Pages / Money =====
+@app.route('/api/v1/profile',methods=['GET','POST'])
+def profile():
+    u,e=req_user()
+    if e: return e
+    if request.method=='GET': return jsonify({"user":u.to_dict()})
+    d=request.get_json(force=True)
+    for k in ['name','bio','avatar','cover','username','phone']:
+        if k in d: setattr(u,k,d[k])
+    db.session.commit(); return jsonify({"user":u.to_dict()})
+@app.route('/api/v1/users',methods=['GET'])
+def users():
+    u,e=req_user()
+    if e: return e
+    return jsonify({"users":[x.to_dict() for x in User.query.filter(User.id!=u.id).all()]})
+@app.route('/api/v1/pages',methods=['GET','POST'])
+def pages():
+    u,e=req_user()
+    if e: return e
+    if request.method=='GET': return jsonify({"pages":[x.to_dict() for x in Page.query.all()]})
+    d=request.get_json(force=True); p=Page(user_id=u.id,name=d.get('name','My Page'),category=d.get('category','Page'))
+    db.session.add(p); db.session.commit(); return jsonify({"page":p.to_dict()})
+@app.route('/api/v1/monetization',methods=['GET','POST'])
+def monet():
+    u,e=req_user()
+    if e: return e
+    if request.method=='GET': return jsonify({"balance":u.balance,"earnings":u.balance})
+    d=request.get_json(force=True); amt=float(d.get('amount',0) or 0)
+    if amt<=0 or amt>u.balance: return jsonify({"error":"invalid amount - رصيدك ما كافي"}),400
+    u.balance-=amt; db.session.add(Payment(user_id=u.id,amount=amt,method=d.get('method','withdraw'),status='completed')); db.session.commit(); return jsonify({"balance":u.balance})
+@app.route('/api/v1/gifts',methods=['GET','POST'])
+def gifts():
+    u,e=req_user()
+    if e: return e
+    if request.method=='GET': return jsonify({"gifts":[x.to_dict() for x in Gift.query.filter_by(receiver_id=u.id).all()]})
+    d=request.get_json(force=True); amt=float(d.get('amount',0) or 0); recv=int(d.get('receiver_id',0) or 0)
+    if amt<=0 or amt>u.balance: return jsonify({"error":"insufficient balance"}),400
+    r=User.query.get(recv)
+    if not r: return jsonify({"error":"receiver not found"}),404
+    u.balance-=amt; r.balance+=amt; db.session.add(Gift(sender_id=u.id,receiver_id=recv,amount=amt,message=d.get('message',''))); db.session.commit(); return jsonify({"ok":True,"balance":u.balance})
+@app.route('/api/v1/ads',methods=['GET','POST'])
+def ads():
+    u,e=req_user()
+    if e: return e
+    if request.method=='GET': return jsonify({"ads":[x.to_dict() for x in Ad.query.filter_by(user_id=u.id).all()]})
+    d=request.get_json(force=True); a=Ad(user_id=u.id,title=d.get('title','Ad'),budget=float(d.get('budget',0) or 0)); db.session.add(a); db.session.commit(); return jsonify({"ad":a.to_dict()})
+@app.route('/api/v1/support',methods=['GET','POST'])
+def support():
+    u,e=req_user()
+    if e: return e
+    if request.method=='GET': return jsonify({"tickets":[x.to_dict() for x in Support.query.filter_by(user_id=u.id).all()]})
+    d=request.get_json(force=True); s=Support(user_id=u.id,subject=d.get('subject',''),message=d.get('message','')); db.session.add(s); db.session.commit(); return jsonify({"ticket":s.to_dict()})
+@app.route('/api/v1/links',methods=['GET','POST'])
+def links():
+    u,e=req_user()
+    if e: return e
+    if request.method=='GET': return jsonify({"links":[x.to_dict() for x in Link.query.filter_by(user_id=u.id).all()]})
+    d=request.get_json(force=True); l=Link(user_id=u.id,url=d.get('url',''),title=d.get('title','')); db.session.add(l); db.session.commit(); return jsonify({"link":l.to_dict()})
+@app.route('/api/v1/payments',methods=['GET','POST'])
+def payments():
+    u,e=req_user()
+    if e: return e
+    if request.method=='GET': return jsonify({"payments":[x.to_dict() for x in Payment.query.filter_by(user_id=u.id).all()]})
+    d=request.get_json(force=True); amt=float(d.get('amount',0) or 0); p=Payment(user_id=u.id,amount=amt,method=d.get('method','')); db.session.add(p); u.balance+=amt; db.session.commit(); return jsonify({"payment":p.to_dict()})
+@app.route('/api/v1/suggest',methods=['GET'])
+def suggest():
+    u,e=req_user()
+    if e: return e
+    return jsonify({"suggestions":[x.to_dict() for x in User.query.filter(User.id!=u.id).limit(10).all()]})
+@app.route('/api/v1/diagnostics',methods=['GET'])
 def diag():
-    s=db(); uc=s.query(User).count(); pc=s.query(Post).count(); s.close()
-    tests=[{"name":"الداتابيز PostgreSQL","status":"شغال ✅","detail":f"{uc} حساب محفوظ - {pc} بوست محفوظ - ما بيطير"},{"name":"تسجيل الدخول SHA256","status":"شغال ✅","detail":"كلمات سر مشفرة"},{"name":"الملف - مشفر","status":"شغال ✅","detail":"جوال و إيميل مشفرين"},{"name":"الأرباح - من 0","status":"شغال ✅","detail":"محفوظة في الداتابيز"},{"name":"الإعلانات","status":"شغال ✅","detail":"مرتبطة بالداتابيز"},{"name":"الصفحات","status":"شغال ✅","detail":"محفوظة"}]
-    return jsonify({"tests":tests,"summary":f"{len(tests)}/{len(tests)} شغالة ✅ - داتابيز حقيقية"})
-@app.route('/api/v1/posts', methods=['GET'])
-def get_posts():
-    s=db(); ps=s.query(Post).order_by(Post.created_at.desc()).all(); r=[{"id":p.id,"author_name":p.author_name,"author_avatar":p.author_avatar,"content":p.content,"media_url":p.media_url,"media_type":p.media_type,"kind":p.kind,"likes_count":p.likes,"comments_count":p.comments_count,"shares_count":p.shares,"liked":p.liked} for p in ps]; s.close(); return jsonify(sorted(r, key=lambda x: x["likes_count"]*2+x["comments_count"]*3, reverse=True))
-@app.route('/api/v1/posts', methods=['POST'])
-def create_post():
-    u=get_user(); d=request.json or {}; s=db(); p=Post(id=str(uuid.uuid4()),user_id=session.get("user_id"),author_name=u.name if u else d.get("author_name","أنت"),author_avatar=u.avatar if u else "https://i.pravatar.cc/150?u=me",content=d.get("content",""),media_url=d.get("media_url",""),media_type=d.get("media_type","text"),kind=d.get("kind","post"),likes=0,comments_count=0,shares=0,liked=False); s.add(p)
-    if u:
-        uu=s.query(User).filter_by(id=u.id).first(); uu.views+=10
-    s.commit(); s.close(); return jsonify({"ok":True})
-@app.route('/api/v1/posts/<pid>/like', methods=['POST'])
-def like_post(pid):
-    s=db(); p=s.query(Post).filter_by(id=pid).first()
-    if not p: s.close(); return jsonify({"error":"not found"}),404
-    p.liked=not p.liked; p.likes+=1 if p.liked else -1; s.commit(); r={"id":p.id,"author_name":p.author_name,"author_avatar":p.author_avatar,"content":p.content,"media_url":p.media_url,"media_type":p.media_type,"kind":p.kind,"likes_count":p.likes,"comments_count":p.comments_count,"shares_count":p.shares,"liked":p.liked}; s.close(); return jsonify(r)
-@app.route('/api/v1/posts/<pid>/share', methods=['POST'])
-def share_post(pid):
-    s=db(); p=s.query(Post).filter_by(id=pid).first()
-    if not p: s.close(); return jsonify({"error":"not found"}),404
-    p.shares+=1; s.commit(); s.close(); return jsonify({"ok":True})
-@app.route('/api/v1/posts/<pid>/comments', methods=['GET'])
-def get_comments(pid):
-    s=db(); r=[{"author":c.author,"content":c.content} for c in s.query(Comment).filter_by(post_id=pid).all()]; s.close(); return jsonify(r)
-@app.route('/api/v1/posts/<pid>/comment', methods=['POST'])
-def comment_post(pid):
-    d=request.json or {}; s=db(); p=s.query(Post).filter_by(id=pid).first()
-    if not p: s.close(); return jsonify({"error":"not found"}),404
-    p.comments_count+=1; s.add(Comment(id=str(uuid.uuid4()),post_id=pid,author=d.get("author","أنت"),content=d.get("content",""))); s.commit(); s.close(); return jsonify({"ok":True})
-@app.route('/api/v1/chats', methods=['GET'])
-def get_chats():
-    s=db(); r=[{"id":c.id,"name":c.name,"avatar":c.avatar,"last_message":c.last_message} for c in s.query(Chat).all()]; s.close(); return jsonify(r)
-@app.route('/api/v1/chats', methods=['POST'])
-def create_chat():
-    d=request.json or {}; s=db(); cid=str(uuid.uuid4()); s.add(Chat(id=cid,name=d.get("name","محادثة"),avatar=d.get("avatar","https://i.pravatar.cc/150?u=x"),last_message="")); s.commit(); s.close(); return jsonify({"ok":True})
-@app.route('/api/v1/chats/<cid>/messages', methods=['GET'])
-def get_messages(cid):
-    s=db(); r=[{"sender_id":m.sender_id,"content":m.content} for m in s.query(Message).filter_by(chat_id=cid).all()]; s.close(); return jsonify(r)
-@app.route('/api/v1/chats/<cid>/messages', methods=['POST'])
-def send_message(cid):
-    d=request.json or {}; s=db(); s.add(Message(id=str(uuid.uuid4()),chat_id=cid,sender_id=d.get("sender_id","me"),content=d.get("content",""))); c=s.query(Chat).filter_by(id=cid).first()
-    if c: c.last_message=d.get("content","")
-    s.commit(); s.close(); return jsonify({"ok":True})
-if __name__=='__main__': app.run(host='0.0.0.0', port=int(os.environ.get('PORT',5000)))
+    u,e=req_user()
+    if e: return e
+    return jsonify({"ok":True,"users":User.query.count(),"posts":Post.query.count(),"chats":Chat.query.count(),"time":now()})
+@app.route('/api/v1/avatar',methods=['POST'])
+def avatar():
+    u,e=req_user()
+    if e: return e
+    d=request.get_json(force=True); u.avatar=d.get('avatar',''); db.session.commit(); return jsonify({"user":u.to_dict()})
+
+# ===== Posts / Reels / Threads / Stories =====
+@app.route('/api/v1/posts',methods=['GET','POST'])
+def posts():
+    u,e=req_user()
+    if e: return e
+    if request.method=='GET':
+        out=[]
+        for p in Post.query.order_by(Post.id.desc()).all():
+            d=p.to_dict(); d['comments_list']=[c.to_dict() for c in Comment.query.filter_by(post_id=p.id).all()]; out.append(d)
+        return jsonify({"posts":out})
+    d=request.get_json(force=True); p=Post(user_id=u.id,user_name=u.name,text=d.get('text',''),image=d.get('image',''),video=d.get('video',''),link=d.get('link','')); db.session.add(p); db.session.commit(); return jsonify({"post":p.to_dict()})
+@app.route('/api/v1/posts/<int:pid>/like',methods=['POST'])
+def like(pid):
+    u,e=req_user()
+    if e: return e
+    p=Post.query.get(pid)
+    if not p: return jsonify({"error":"not found"}),404
+    p.likes+=1; db.session.commit(); return jsonify({"likes":p.likes})
+@app.route('/api/v1/posts/<int:pid>/share',methods=['POST'])
+def share(pid):
+    u,e=req_user()
+    if e: return e
+    p=Post.query.get(pid)
+    if not p: return jsonify({"error":"not found"}),404
+    p.shares+=1; db.session.commit(); return jsonify({"shares":p.shares})
+@app.route('/api/v1/posts/<int:pid>/comments',methods=['GET','POST'])
+def comments(pid):
+    u,e=req_user()
+    if e: return e
+    if request.method=='GET': return jsonify({"comments":[c.to_dict() for c in Comment.query.filter_by(post_id=pid).all()]})
+    d=request.get_json(force=True); c=Comment(post_id=pid,user_id=u.id,user_name=u.name,text=d.get('text','')); db.session.add(c)
+    p=Post.query.get(pid)
+    if p: p.comments+=1
+    db.session.commit(); return jsonify({"comment":c.to_dict()})
+@app.route('/api/v1/reels',methods=['GET','POST'])
+def reels():
+    u,e=req_user()
+    if e: return e
+    if request.method=='GET': return jsonify({"reels":[x.to_dict() for x in Reel.query.order_by(Reel.id.desc()).all()]})
+    d=request.get_json(force=True); r=Reel(user_id=u.id,user_name=u.name,video=d.get('video',''),caption=d.get('caption','')); db.session.add(r); db.session.commit(); return jsonify({"reel":r.to_dict()})
+@app.route('/api/v1/threads',methods=['GET','POST'])
+def threads():
+    u,e=req_user()
+    if e: return e
+    if request.method=='GET': return jsonify({"threads":[x.to_dict() for x in Thread.query.order_by(Thread.id.desc()).all()]})
+    d=request.get_json(force=True); t=Thread(user_id=u.id,user_name=u.name,text=d.get('text','')); db.session.add(t); db.session.commit(); return jsonify({"thread":t.to_dict()})
+@app.route('/api/v1/stories',methods=['GET','POST'])
+def stories():
+    u,e=req_user()
+    if e: return e
+    if request.method=='GET': return jsonify({"stories":[x.to_dict() for x in Story.query.order_by(Story.id.desc()).all()]})
+    d=request.get_json(force=True); s=Story(user_id=u.id,user_name=u.name,image=d.get('image','')); db.session.add(s); db.session.commit(); return jsonify({"story":s.to_dict()})
+
+# ===== Friends / Chats - مصلح: ما بيعمل شات مكرر =====
+@app.route('/api/v1/friends',methods=['GET','POST'])
+def friends():
+    u,e=req_user()
+    if e: return e
+    if request.method=='GET': return jsonify({"friends":[x.to_dict() for x in Friend.query.filter_by(user_id=u.id).all()]})
+    d=request.get_json(force=True); fid=int(d.get('friend_id',0) or 0); f=User.query.get(fid)
+    if not f: return jsonify({"error":"user not found"}),404
+    if Friend.query.filter_by(user_id=u.id,friend_id=fid).first(): return jsonify({"ok":True})
+    db.session.add(Friend(user_id=u.id,friend_id=fid,friend_name=f.name)); db.session.add(Friend(user_id=fid,friend_id=u.id,friend_name=u.name)); db.session.commit(); return jsonify({"ok":True})
+@app.route('/api/v1/chats',methods=['GET','POST'])
+def chats():
+    u,e=req_user()
+    if e: return e
+    if request.method=='GET': return jsonify({"chats":[x.to_dict() for x in Chat.query.filter((Chat.user1==u.id)|(Chat.user2==u.id)).all()]})
+    d=request.get_json(force=True); other=int(d.get('user_id',0) or d.get('friend_id',0) or 0); o=User.query.get(other)
+    if not o: return jsonify({"error":"user not found"}),404
+    ex=Chat.query.filter(((Chat.user1==u.id)&(Chat.user2==other))|((Chat.user1==other)&(Chat.user2==u.id))).first()
+    if ex: return jsonify({"chat":ex.to_dict()})
+    c=Chat(user1=u.id,user2=other,name=o.name); db.session.add(c); db.session.commit(); return jsonify({"chat":c.to_dict()})
+@app.route('/api/v1/chats/<int:cid>/messages',methods=['GET','POST'])
+def msgs(cid):
+    u,e=req_user()
+    if e: return e
+    if request.method=='GET': return jsonify({"messages":[x.to_dict() for x in Message.query.filter_by(chat_id=cid).all()]})
+    d=request.get_json(force=True); m=Message(chat_id=cid,sender_id=u.id,sender_name=u.name,text=d.get('text',''),image=d.get('image','')); db.session.add(m)
+    ch=Chat.query.get(cid)
+    if ch: ch.last_msg=d.get('text','')
+    db.session.commit(); return jsonify({"message":m.to_dict()})
+
+# ===== Frontend - HTML + JS كامل مصلح =====
+@app.route('/')
+def index(): return HTML_PAGE
+HTML_PAGE = """<!DOCTYPE html><html lang="ar" dir="rtl"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>B-2048</title><style>*{box-sizing:border-box}body{margin:0;font-family:system-ui;background:#0b1220;color:#fff}input,textarea{width:100%;padding:12px;border-radius:12px;border:1px solid #334155;background:#0f172a;color:#fff;margin:6px 0}button{padding:11px 14px;border:0;border-radius:12px;background:#1877f2;color:#fff;font-weight:700;cursor:pointer}.card{background:#111c33;border:1px solid #26314d;border-radius:16px;padding:14px;margin:10px}.top{position:sticky;top:0;background:#0b1220;padding:12px;display:flex;gap:8px;align-items:center}.tabs{display:flex;gap:6px;overflow:auto;padding:0 10px}.tabs button{background:#1e293b}.tabs button.on{background:#1877f2}.hidden{display:none}.post img{max-width:100%;border-radius:12px}.row{display:flex;gap:8px;align-items:center}.avatar{width:42px;height:42px;border-radius:50%;background:#334155;display:flex;align-items:center;justify-content:center;font-weight:800;overflow:hidden}.pill{background:#1e293b;padding:6px 10px;border-radius:20px;font-size:13px}</style></head><body>
+<div id="authScreen"><div class="card" style="max-width:420px;margin:30px auto"><h1 style="text-align:center">B-2048 🌐</h1><p style="text-align:center;opacity:.8">فيسبوك + واتساب + ثريدز في تطبيق واحد</p><div id="loginCard"><input id="loginEmail" placeholder="الإيميل"><input id="loginPass" type="password" placeholder="كلمة السر"><button onclick="doLogin()" style="width:100%">دخول</button><button onclick="document.getElementById('loginCard').classList.add('hidden');document.getElementById('registerCard').classList.remove('hidden')" style="width:100%;background:#22c55e;margin-top:8px">إنشاء حساب جديد</button></div><div id="registerCard" class="hidden"><input id="regName" placeholder="الاسم"><input id="regEmail" placeholder="الإيميل"><input id="regPass" type="password" placeholder="كلمة السر"><button onclick="doRegister()" style="width:100%;background:#22c55e">تسجيل</button><button onclick="document.getElementById('registerCard').classList.add('hidden');document.getElementById('loginCard').classList.remove('hidden')" style="width:100%;background:#475569;margin-top:8px">عندي حساب</button></div><p id="authMsg" style="text-align:center;color:#fda4af"></p></div></div>
+<div id="appScreen" class="hidden"><div class="top"><div class="avatar" id="myAvatar">B</div><b id="myName">User</b><span class="pill" id="myBalance">💰 0</span><button onclick="logout()" style="margin-inline-start:auto;background:#ef4444">خروج</button></div><div class="tabs" id="tabs"></div>
+<div id="view-home"><div class="card"><textarea id="postText" placeholder="شنو في بالك؟"></textarea><input id="postImage" placeholder="رابط صورة (اختياري)"><input id="postLink" placeholder="رابط (اختياري)"><button onclick="createPost()">نشر 📝</button> <button onclick="togglePlus()" style="background:#22c55e">+ إضافة</button></div><div id="plusMenu" class="card hidden"><button onclick="addImage()">🖼️ صورة</button><button onclick="makeImage()">✨ توليد صورة</button><button onclick="previewLink()">🔗 معاينة رابط</button><button onclick="show('reels')">🎬 ريلز</button><button onclick="show('threads')">🧵 ثريدز</button></div><div id="stories"></div><div id="posts"></div></div>
+<div id="view-reels" class="hidden"><div class="card"><input id="reelVideo" placeholder="رابط فيديو"><input id="reelCaption" placeholder="وصف الريلز"><button onclick="createReel()">نشر ريلز 🎬</button></div><div id="reels"></div></div>
+<div id="view-threads" class="hidden"><div class="card"><textarea id="threadText" placeholder="اكتب ثريد..."></textarea><button onclick="createThread()">نشر ثريد 🧵</button></div><div id="threads"></div></div>
+<div id="view-chats" class="hidden"><div class="card"><h3>💬 محادثاتي</h3><div id="chats"></div></div><div class="card"><h3>👥 كل المستخدمين</h3><div id="allUsers"></div></div><div class="card hidden" id="chatBox"><h3 id="chatTitle">محادثة</h3><div id="messages" style="max-height:300px;overflow:auto"></div><div class="row"><input id="msgText" placeholder="اكتب رسالة..."><button onclick="sendMsg()">إرسال</button></div></div></div>
+<div id="view-friends" class="hidden"><div class="card"><h3>👥 أصدقائي</h3><div id="friends"></div></div><div class="card"><h3>✨ اقتراحات</h3><div id="suggest"></div></div></div>
+<div id="view-profile" class="hidden"><div class="card"><input id="pName" placeholder="الاسم"><input id="pBio" placeholder="النبذة"><input id="pAvatar" placeholder="رابط الصورة"><input id="pPhone" placeholder="الهاتف"><button onclick="saveProfile()">حفظ الملف الشخصي ✅</button></div><div class="card"><h3>📄 صفحاتي</h3><input id="pageName" placeholder="اسم الصفحة"><button onclick="createPage()">إنشاء صفحة</button><div id="pages"></div></div></div>
+<div id="view-money" class="hidden"><div class="card"><h3>💰 محفظتي</h3><p id="moneyBalance"></p><input id="payAmount" type="number" placeholder="المبلغ"><input id="payMethod" placeholder="الطريقة - زين / بنكك"><button onclick="addPayment()">شحن 💳</button><button onclick="withdraw()" style="background:#f59e0b">سحب</button></div><div class="card"><h3>🎁 إرسال هدية</h3><input id="giftTo" placeholder="ID المستلم"><input id="giftAmount" type="number" placeholder="المبلغ"><button onclick="sendGift()">إرسال هدية</button></div><div id="payments"></div></div>
+<div id="view-ads" class="hidden"><div class="card"><h3>📢 إعلاناتي</h3><input id="adTitle" placeholder="عنوان الإعلان"><input id="adBudget" type="number" placeholder="الميزانية"><button onclick="createAd()">إنشاء إعلان</button><div id="ads"></div></div></div>
+<div id="view-support" class="hidden"><div class="card"><h3>🛟 الدعم</h3><input id="supSubject" placeholder="الموضوع"><textarea id="supMsg" placeholder="رسالتك"></textarea><button onclick="sendSupport()">إرسال</button><div id="supports"></div></div></div>
+<div id="view-links" class="hidden"><div class="card"><h3>🔗 روابطي</h3><input id="linkUrl" placeholder="الرابط"><input id="linkTitle" placeholder="العنوان"><button onclick="saveLink()">حفظ رابط</button><div id="links"></div></div></div>
+<div id="view-menu" class="hidden"><div class="card"><h3>☰ القائمة - الإعدادات / الخصوصية / الأجهزة / زين / واتساب / Free Basics</h3><button onclick="loadDiagnostics()">🔍 تشخيص النظام</button><div id="diag"></div></div></div></div>
+<script>
+const API=location.origin+'/api/v1'; let ME=null, CUR_CHAT=null;
+function hdr(){return {'Content-Type':'application/json','X-User-Id':ME?ME.id:''}}
+async function api(p,m='GET',b=null){let r=await fetch(API+p,{method:m,headers:hdr(),body:b?JSON.stringify(b):null}); return r.json()}
+async function doRegister(){let d=await api('/register','POST',{name:regName.value,email:regEmail.value,password:regPass.value}); if(d.error){authMsg.innerText=d.error;return} ME=d.user; enter()}
+async function doLogin(){let d=await api('/login','POST',{email:loginEmail.value,password:loginPass.value}); if(d.error){authMsg.innerText=d.error;return} ME=d.user; enter()}
+function logout(){ME=null; authScreen.classList.remove('hidden'); appScreen.classList.add('hidden')}
+function enter(){authScreen.classList.add('hidden'); appScreen.classList.remove('hidden'); myName.innerText=ME.name; myBalance.innerText='💰 '+(ME.balance||0); buildTabs(); show('home'); loadAll()}
+function buildTabs(){let t=[['home','🏠 الرئيسية'],['reels','🎬 ريلز'],['threads','🧵 ثريدز'],['chats','💬 محادثات'],['friends','👥 أصدقاء'],['profile','👤 بروفايل'],['money','💰 أموال'],['ads','📢 إعلانات'],['support','🛟 دعم'],['links','🔗 روابط'],['menu','☰ قائمة']]; tabs.innerHTML=t.map(x=>'<button onclick="show(\\''+x[0]+'\\')" id="tab-'+x[0]+'">'+x[1]+'</button>').join('')}
+function show(v){document.querySelectorAll('[id^="view-"]').forEach(e=>e.classList.add('hidden')); let el=document.getElementById('view-'+v); if(el) el.classList.remove('hidden'); document.querySelectorAll('.tabs button').forEach(b=>b.classList.remove('on')); let tb=document.getElementById('tab-'+v); if(tb) tb.classList.add('on'); if(v=='chats') loadChats(); if(v=='friends') loadFriends(); if(v=='money') loadPayments(); if(v=='profile') loadPages(); if(v=='ads') loadAds(); if(v=='support') loadSupport(); if(v=='links') loadLinks()}
+function togglePlus(){plusMenu.classList.toggle('hidden')}
+function previewLink(){let l=postLink.value; if(!l) return alert('اكتب رابط'); postText.value+='\\n🔗 '+l}
+function addImage(){let u=prompt('رابط الصورة:'); if(u) postImage.value=u}
+function makeImage(){postImage.value='https://picsum.photos/600/400?random='+Math.floor(Math.random()*1000)}
+async function loadAll(){let d=await api('/posts'); posts.innerHTML=(d.posts||[]).map(p=>'<div class="card post"><div class="row"><div class="avatar">'+(p.user_name||'U')[0]+'</div><b>'+p.user_name+'</b></div><p>'+(p.text||'')+'</p>'+(p.image?'<img src="'+p.image+'">':'')+(p.link?'<a href="'+p.link+'" target="_blank">'+p.link+'</a>':'')+'<div class="row"><button onclick="toggleLike('+p.id+')">❤️ '+p.likes+'</button><button onclick="toggleComments('+p.id+')">💬 '+p.comments+'</button><button onclick="sharePost('+p.id+')">↗️ '+p.shares+'</button></div><div id="c-'+p.id+'" class="hidden"><input id="ci-'+p.id+'" placeholder="اكتب تعليق..."><button onclick="addComment('+p.id+')">تعليق</button><div>'+(p.comments_list||[]).map(c=>'<p><b>'+c.user_name+':</b> '+c.text+'</p>').join('')+'</div></div></div>').join('')||'<div class="card">لا توجد منشورات بعد</div>'; let s=await api('/stories'); stories.innerHTML='<div class="card">📖 ستوريز: '+(s.stories||[]).length+'</div>'; let r=await api('/reels'); reels.innerHTML=(r.reels||[]).map(x=>'<div class="card">🎬 '+x.user_name+' - '+(x.caption||'')+'</div>').join(''); let th=await api('/threads'); threads.innerHTML=(th.threads||[]).map(x=>'<div class="card">🧵 <b>'+x.user_name+'</b><p>'+x.text+'</p></div>').join('')}
+function renderAll(){loadAll()}
+async function createPost(){await api('/posts','POST',{text:postText.value,image:postImage.value,link:postLink.value}); postText.value=''; postImage.value=''; postLink.value=''; loadAll()}
+async function createThread(){await api('/threads','POST',{text:threadText.value}); threadText.value=''; loadAll()}
+async function createReel(){await api('/reels','POST',{video:reelVideo.value,caption:reelCaption.value}); reelVideo.value=''; reelCaption.value=''; loadAll()}
+function toggleComments(id){document.getElementById('c-'+id).classList.toggle('hidden')}
+async function addComment(id){let v=document.getElementById('ci-'+id).value; if(!v) return; await api('/posts/'+id+'/comments','POST',{text:v}); loadAll()}
+async function toggleLike(id){await api('/posts/'+id+'/like','POST',{}); loadAll()}
+async function sharePost(id){await api('/posts/'+id+'/share','POST',{}); loadAll()}
+async function loadFriends(){let d=await api('/friends'); friends.innerHTML=(d.friends||[]).map(f=>'<p>👤 '+f.friend_name+'</p>').join('')||'لا أصدقاء بعد'; let s=await api('/suggest'); suggest.innerHTML=(s.suggestions||[]).map(u=>'<div class="row"><span>'+u.name+'</span><button onclick="addFriend('+u.id+')">+ إضافة</button><button onclick="openChat('+u.id+',\\''+u.name+'\\')" style="background:#22c55e">💬 محادثة</button></div>').join('')}
+async function addFriend(id){await api('/friends','POST',{friend_id:id}); loadFriends()}
+async function loadChats(){let d=await api('/chats'); chats.innerHTML=(d.chats||[]).map(c=>'<div class="card" onclick="openChatById('+c.id+',\\''+c.name+'\\')">💬 '+c.name+' - '+(c.last_msg||'')+'</div>').join('')||'لا محادثات'; let u=await api('/users'); allUsers.innerHTML=(u.users||[]).map(x=>'<div class="row"><span>'+x.name+'</span><button onclick="openChat('+x.id+',\\''+x.name+'\\')">💬</button></div>').join('')}
+async function openChat(uid,name){let d=await api('/chats','POST',{user_id:uid}); if(d.chat) openChatById(d.chat.id,name)}
+function openChatById(id,name){CUR_CHAT=id; chatBox.classList.remove('hidden'); chatTitle.innerText='💬 '+name; loadMessages()}
+async function loadMessages(){if(!CUR_CHAT) return; let d=await api('/chats/'+CUR_CHAT+'/messages'); messages.innerHTML=(d.messages||[]).map(m=>'<p><b>'+m.sender_name+':</b> '+m.text+'</p>').join('')}
+async function sendMsg(){if(!CUR_CHAT) return alert('اختر محادثة'); let t=msgText.value; if(!t) return; await api('/chats/'+CUR_CHAT+'/messages','POST',{text:t}); msgText.value=''; loadMessages()}
+async function saveProfile(){let d=await api('/profile','POST',{name:pName.value,bio:pBio.value,avatar:pAvatar.value,phone:pPhone.value}); if(d.user){ME=d.user; myName.innerText=ME.name; alert('تم الحفظ ✅')}}
+async function loadPages(){let d=await api('/pages'); pages.innerHTML=(d.pages||[]).map(p=>'<p>📄 '+p.name+'</p>').join('')}
+async function createPage(){await api('/pages','POST',{name:pageName.value}); pageName.value=''; loadPages()}
+async function loadPayments(){let d=await api('/payments'); payments.innerHTML=(d.payments||[]).map(p=>'<div class="card">💳 '+p.amount+' - '+p.method+'</div>').join(''); let m=await api('/monetization'); moneyBalance.innerText='رصيدك: '+(m.balance||0)}
+async function addPayment(){await api('/payments','POST',{amount:payAmount.value,method:payMethod.value}); loadPayments()}
+async function withdraw(){let d=await api('/monetization','POST',{amount:payAmount.value,method:payMethod.value}); if(d.error) alert(d.error); else alert('تم السحب ✅'); loadPayments()}
+async function sendGift(){let d=await api('/gifts','POST',{receiver_id:giftTo.value,amount:giftAmount.value}); if(d.error) alert(d.error); else alert('تم إرسال الهدية 🎁')}
+async function loadAds(){let d=await api('/ads'); ads.innerHTML=(d.ads||[]).map(a=>'<p>📢 '+a.title+' - '+a.budget+'</p>').join('')}
+async function createAd(){await api('/ads','POST',{title:adTitle.value,budget:adBudget.value}); loadAds()}
+async function loadSupport(){let d=await api('/support'); supports.innerHTML=(d.tickets||[]).map(s=>'<p>🛟 '+s.subject+' - '+s.status+'</p>').join('')}
+async function sendSupport(){await api('/support','POST',{subject:supSubject.value,message:supMsg.value}); loadSupport()}
+async function loadLinks(){let d=await api('/links'); links.innerHTML=(d.links||[]).map(l=>'<p>🔗 <a href="'+l.url+'" target="_blank">'+l.title+'</a></p>').join('')}
+async function saveLink(){await api('/links','POST',{url:linkUrl.value,title:linkTitle.value}); loadLinks()}
+async function loadDiagnostics(){let d=await api('/diagnostics'); diag.innerHTML='<p>✅ النظام شغال - مستخدمين: '+d.users+' - منشورات: '+d.posts+'</p>'}
+</script></body></html>"""
+
+if __name__=='__main__':
+    port=int(os.environ.get('PORT',5000)); app.run(host='0.0.0.0',port=port)
