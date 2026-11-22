@@ -8,10 +8,13 @@ from datetime import datetime
 app = Flask(__name__)
 CORS(app)
 
-# --- إصلاح قاعدة البيانات لـ Vercel ---
-db_url = os.environ.get('DATABASE_URL', 'sqlite:////tmp/noorbook.db')
+# --- إصلاح قاعدة البيانات - ده كان سبب المشكلة ---
+db_url = os.environ.get('DATABASE_URL', '').strip()
+if not db_url or '://' not in db_url:
+    db_url = 'sqlite:///noorbook.db'
 if db_url.startswith('postgres://'):
     db_url = db_url.replace('postgres://', 'postgresql://', 1)
+
 app.config['SQLALCHEMY_DATABASE_URI'] = db_url
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY', 'noorbook-secret-123')
@@ -52,7 +55,6 @@ class Notification(db.Model):
     is_read = db.Column(db.Boolean, default=False)
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
 
-# إنشاء الجداول مرة واحدة فقط
 with app.app_context():
     try:
         db.create_all()
@@ -62,7 +64,6 @@ with app.app_context():
 def user_dict(u):
     return {'id': u.id, 'username': u.username, 'email': u.email, 'bio': u.bio or '', 'avatar': u.avatar or '', 'created_at': u.created_at.isoformat() if u.created_at else ''}
 
-# --- الصفحة الرئيسية ---
 @app.route('/')
 def index():
     return '''
@@ -94,7 +95,7 @@ button.green{background:#42b72a} .post-avatar{width:40px;height:40px;border-radi
 <p id="authMsg" style="color:red"></p>
 </div>
 <div id="mainBox" style="display:none">
-<div class="tabs"><button class="active" onclick="showTab('posts',this)">المنشورات</button><button onclick="showTab('chat',this)">NoorChat 💬</button><button onclick="showTab('notif',this)">الإشعارات 🔔 <span id="notifCount"></span></button></div>
+<div class="tabs"><button class="active" onclick="showTab('posts',this)">المنشورات</button><button onclick="showTab('chat',this)">NoorChat 💬</button><button onclick="showTab('notif',this)">الإشعارات 🔔</button></div>
 <div id="tab-posts">
 <div class="card"><textarea id="postContent" placeholder="شنو في بالك؟"></textarea><input id="postImage" placeholder="رابط صورة (اختياري)"><button onclick="createPost()">نشر</button></div>
 <div id="postsList"></div>
@@ -121,7 +122,6 @@ async function loadNotif(){let r=await fetch('/api/notifications/'+user.id); let
 </script></body></html>
     '''
 
-# --- Auth ---
 @app.route('/api/register', methods=['POST'])
 def register():
     data = request.get_json() or {}
@@ -187,34 +187,4 @@ def messages():
         return jsonify({'message': 'تم الإرسال'})
     uid = request.args.get('user_id', type=int); oid = request.args.get('other_id', type=int)
     msgs = Message.query.filter(((Message.sender_id==uid)&(Message.receiver_id==oid))|((Message.sender_id==oid)&(Message.receiver_id==uid))).order_by(Message.created_at.asc()).all()
-    for m in msgs:
-        if m.receiver_id == uid: m.is_read = True
-    db.session.commit()
-    return jsonify({'messages': [{'id': m.id, 'sender_id': m.sender_id, 'receiver_id': m.receiver_id, 'content': m.content, 'created_at': m.created_at.isoformat() if m.created_at else '', 'is_read': m.is_read} for m in msgs]})
-
-@app.route('/api/conversations/<int:user_id>')
-def conversations(user_id):
-    msgs = Message.query.filter((Message.sender_id==user_id)|(Message.receiver_id==user_id)).order_by(Message.created_at.desc()).all()
-    conv = {}
-    for m in msgs:
-        other = m.receiver_id if m.sender_id==user_id else m.sender_id
-        if other not in conv:
-            u = User.query.get(other)
-            conv[other] = {'user_id': other, 'username': u.username if u else '', 'last_message': m.content, 'unread': 0}
-        if m.receiver_id==user_id and not m.is_read:
-            conv[other]['unread'] += 1
-    return jsonify({'conversations': list(conv.values())})
-
-@app.route('/api/notifications/<int:user_id>')
-def notifications(user_id):
-    notifs = Notification.query.filter_by(user_id=user_id).order_by(Notification.created_at.desc()).all()
-    return jsonify({'notifications': [{'id': n.id, 'content': n.content, 'type': n.type, 'is_read': n.is_read, 'created_at': n.created_at.isoformat() if n.created_at else ''} for n in notifs]})
-
-@app.route('/api/notifications/<int:notif_id>/read', methods=['POST'])
-def read_notif(notif_id):
-    n = Notification.query.get_or_404(notif_id)
-    n.is_read = True; db.session.commit()
-    return jsonify({'message': 'تم'})
-
-if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 5000)))
+    for
